@@ -21,6 +21,7 @@ SMFELossWeights, smfe_total_loss -- training-step helpers
 from .model import TwoStreamSMFEHGT, SMFEProbes
 from .readout import CrossStreamAttentionReadout
 from .partition import partition_edges, make_node_type_to_domain, edge_partition_stats
+from .types import SMFEBatch
 from .losses import (
     alignment_loss,
     xcov_loss,
@@ -35,6 +36,7 @@ __all__ = [
     "TwoStreamSMFEHGT",
     "SMFEProbes",
     "CrossStreamAttentionReadout",
+    "SMFEBatch",
     "partition_edges",
     "make_node_type_to_domain",
     "edge_partition_stats",

@@ -202,10 +202,25 @@ def main():
     p.add_argument("--n-hid-s", type=int, default=128)
     p.add_argument("--n-hid-m", type=int, default=128)
     p.add_argument("--n-hid-out", type=int, default=128)
-    p.add_argument("--n-heads-hgt", type=int, default=4)
-    p.add_argument("--n-heads-readout", type=int, default=4)
-    p.add_argument("--n-layers", type=int, default=2)
+    p.add_argument("--n-heads-hgt", type=int, default=4,
+                   help="joint HGT attention heads (default for both streams)")
+    p.add_argument("--n-heads-hgt-s", type=int, default=None,
+                   help="state-stream HGT attention heads; overrides --n-heads-hgt")
+    p.add_argument("--n-heads-hgt-m", type=int, default=None,
+                   help="mech-stream HGT attention heads; overrides --n-heads-hgt")
+    p.add_argument("--n-heads-readout", type=int, default=4,
+                   help="cross-stream readout attention heads")
+    p.add_argument("--n-layers", type=int, default=2,
+                   help="joint HGT depth (default for both streams)")
+    p.add_argument("--n-layers-s", type=int, default=None,
+                   help="state-stream HGT depth; overrides --n-layers")
+    p.add_argument("--n-layers-m", type=int, default=None,
+                   help="mech-stream HGT depth; overrides --n-layers")
     p.add_argument("--dropout", type=float, default=0.2)
+    p.add_argument("--dropout-s", type=float, default=None,
+                   help="state-stream dropout; overrides --dropout")
+    p.add_argument("--dropout-m", type=float, default=None,
+                   help="mech-stream dropout; overrides --dropout")
     p.add_argument("--no-rte", action="store_true")
 
     p.add_argument("--lr", type=float, default=5e-3)
@@ -228,13 +243,21 @@ def main():
         d_S_in=args.d_s_in, d_M_in=args.d_m_in,
         n_hid_S=args.n_hid_s, n_hid_M=args.n_hid_m, n_hid_out=args.n_hid_out,
         num_types=args.num_types, num_relations=args.num_relations,
-        n_heads_hgt=args.n_heads_hgt, n_heads_readout=args.n_heads_readout,
+        n_heads_hgt=args.n_heads_hgt,
+        n_heads_hgt_S=args.n_heads_hgt_s, n_heads_hgt_M=args.n_heads_hgt_m,
+        n_heads_readout=args.n_heads_readout,
         n_layers=args.n_layers,
+        n_layers_S=args.n_layers_s, n_layers_M=args.n_layers_m,
         dropout=args.dropout,
+        dropout_S=args.dropout_s, dropout_M=args.dropout_m,
         prev_norm=True, last_norm=True,
         use_RTE=not args.no_rte,
         node_type_to_domain=node_type_to_domain,
     ).to(device)
+    print(
+        f"state stream: layers={model.n_layers_S}, heads={model.n_heads_hgt_S} | "
+        f"mech stream: layers={model.n_layers_M}, heads={model.n_heads_hgt_M}"
+    )
 
     probes = SMFEProbes(d_O=args.n_hid_out, d_S=args.d_s_in, d_M=args.d_m_in).to(device)
     classifier = nn.Linear(args.n_hid_out, args.n_classes).to(device)
