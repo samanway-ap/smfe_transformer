@@ -1,0 +1,19 @@
+# Install PyTorch separately matching your CUDA version, e.g.
+#   pip install torch --index-url https://download.pytorch.org/whl/cu121
+# Then install PyG following https://pytorch-geometric.readthedocs.io/en/latest/install/installation.html
+# (PyG also has CUDA-version-pinned wheels.)
+#
+# Once torch + torch_geometric are installed:
+
+numpy
+scipy
+texttable
+tqdm
+dill
+
+# Only needed if you exercise the original pyHGT/data.py loader (graph plotting):
+seaborn
+matplotlib
+
+# pandas is pulled in by the original pyHGT/data.py
+pandas
