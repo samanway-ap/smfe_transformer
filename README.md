@@ -27,6 +27,29 @@ smfe-hgt/
 
 ## Install
 
+### Option A — Docker (recommended)
+
+The repo ships a CPU-only image that pins compatible PyTorch / PyG
+versions, avoiding the manual CUDA-matched install dance.
+
+```bash
+# Build
+docker build -f docker/Dockerfile -t smfe-hgt .
+
+# Run the smoke tests
+docker run --rm smfe-hgt \
+    sh -c "python tests/test_two_stream.py && python tests/test_isolation.py"
+
+# Or use compose for the predefined train / test services
+docker compose -f docker/docker-compose.yml run --rm test
+docker compose -f docker/docker-compose.yml run --rm train
+```
+
+The compose services mount the repo at `/app`, so local edits are
+picked up without rebuilding.
+
+### Option B — Local venv
+
 ```bash
 # Use a fresh venv. PyG and its companion libs are version-sensitive.
 python -m venv .venv && source .venv/bin/activate

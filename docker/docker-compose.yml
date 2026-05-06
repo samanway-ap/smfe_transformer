@@ -1,0 +1,27 @@
+services:
+  train:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: smfe-hgt:latest
+    container_name: smfe-hgt-train
+    command: >
+      python train_smfe_hgt.py
+      --epochs 10 --batches-per-epoch 20
+      --d-s-in 64 --d-m-in 48
+      --n-hid-s 128 --n-hid-m 128 --n-hid-out 128
+      --n-heads-hgt 4 --n-heads-readout 4 --n-layers 2
+      --lambda-align 1.0 --lambda-xcov 1e-2
+    volumes:
+      - ..:/app
+
+  test:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: smfe-hgt:latest
+    container_name: smfe-hgt-test
+    command: >
+      sh -c "python tests/test_two_stream.py && python tests/test_isolation.py"
+    volumes:
+      - ..:/app
