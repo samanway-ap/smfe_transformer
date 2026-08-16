@@ -6,8 +6,8 @@ SMFE-HGT forward and backward, and verify:
   2) Edge partition stats match expectations.
   3) Cross-stream attention weights are valid (non-negative, sum to 1).
   4) Gradients flow into BOTH the state stream and the mechanism stream.
-  5) The full SMFE loss (task + align + xcov) runs and decreases on a
-     deliberately-easy fitting problem.
+  5) The full SMFE loss (task + align + HSIC independence penalty) runs and
+     decreases on a deliberately-easy fitting problem.
   6) When one stream is given uninformative inputs, the readout's attention
      learns to down-weight it.
 
@@ -180,7 +180,7 @@ def test_gradients_into_both_streams():
 
 
 def test_smfe_total_loss_runs_and_decreases():
-    print("\n[test 3] task + align + xcov loss decreases on an easy fit")
+    print("\n[test 3] task + align + HSIC independence loss decreases on an easy fit")
     torch.manual_seed(2)
     device = "cpu"
 
@@ -212,7 +212,9 @@ def test_smfe_total_loss_runs_and_decreases():
     s_feat = torch.randn(N, d_S, device=device)
     m_feat = torch.randn(N, d_M, device=device)
 
-    weights = SMFELossWeights(lambda_align=1.0, lambda_xcov=1e-2, lambda_inv=0.0)
+    # Default independence penalty is now HSIC (kernelized).
+    weights = SMFELossWeights(lambda_align=1.0, lambda_indep=1e-2, lambda_inv=0.0)
+    assert weights.penalty == "hsic"
 
     opt = torch.optim.Adam(
         list(model.parameters()) + list(probes.parameters()) + list(classifier.parameters()),
@@ -238,7 +240,7 @@ def test_smfe_total_loss_runs_and_decreases():
         losses.append(parts["total"])
         if step % 5 == 0:
             print(f" step {step:2d} | task {parts['task']:.4f} | align {parts['align']:.4f} "
-                  f"| xcov {parts['xcov']:.4f} | total {parts['total']:.4f}")
+                  f"| indep({parts['penalty']}) {parts['indep']:.4f} | total {parts['total']:.4f}")
 
     print(f" first total {losses[0]:.4f} -> last total {losses[-1]:.4f}")
     assert losses[-1] < losses[0], "loss did not decrease"
