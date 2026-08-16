@@ -11,8 +11,10 @@ partition_edges        -- split edge tensors into intra / inter
 make_node_type_to_domain
 
 alignment_loss         -- HGT output should linearly recover (s_v, m_v)
-xcov_loss / xcov_at_output_loss  -- linear decorrelation penalty
-hsic_loss              -- nonlinear (kernelized) decorrelation, stronger
+hsic_loss              -- kernelized independence penalty (the DEFAULT)
+hsic_unbiased          -- unbiased HSIC U-statistic for post-hoc measurement
+xcov_loss / xcov_at_output_loss  -- linear proxy (HSIC's linear special case)
+independence_penalty   -- dispatch HSIC / xcov from SMFELossWeights
 irmv1_penalty          -- per-environment invariance term
 
 SMFELossWeights, smfe_total_loss -- training-step helpers
@@ -27,6 +29,8 @@ from .losses import (
     xcov_loss,
     xcov_at_output_loss,
     hsic_loss,
+    hsic_unbiased,
+    independence_penalty,
     irmv1_penalty,
     SMFELossWeights,
     smfe_total_loss,
@@ -44,6 +48,8 @@ __all__ = [
     "xcov_loss",
     "xcov_at_output_loss",
     "hsic_loss",
+    "hsic_unbiased",
+    "independence_penalty",
     "irmv1_penalty",
     "SMFELossWeights",
     "smfe_total_loss",

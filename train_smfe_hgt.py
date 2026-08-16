@@ -19,7 +19,12 @@ as the alignment targets, treated with stop-gradient inside the loss.
 Usage:
     python train_smfe_hgt.py \
         --epochs 20 --batches-per-epoch 50 \
-        --lambda-align 1.0 --lambda-xcov 1e-2
+        --lambda-align 1.0 --penalty hsic --lambda-indep 1e-2
+
+The independence penalty defaults to HSIC (kernelized, zero exactly at
+independence under a characteristic kernel). Pass ``--penalty xcov`` to
+fall back to the linear cross-covariance proxy, which is its special case
+at a linear kernel and only removes linear dependence.
 
 For multi-environment training with IRM, supply --num-envs > 1 and the
 script will batch across environments using the synthetic shift built in.
@@ -37,6 +42,8 @@ from smfe import (
     SMFEProbes,
     SMFELossWeights,
     smfe_total_loss,
+    alignment_loss,
+    independence_penalty,
     irmv1_penalty,
     edge_partition_stats,
     make_node_type_to_domain,
@@ -108,12 +115,47 @@ def build_loader(
 # Training step
 # ---------------------------------------------------------------------
 
+def _backward_with_separate_clipping(
+    data_loss, penalty_loss, params, clip_norm,
+):
+    r"""
+    Accumulate ``grad(data_loss)`` and ``grad(penalty_loss)`` into
+    ``params``, clipping each contribution to ``clip_norm`` *separately*
+    before summing.
+
+    The kernel (HSIC) penalty's gradient norm is far larger than the data
+    term's, so a single joint clip lets the penalty consume the whole
+    budget and starves the task (App. E: "a sweep under a joint clip
+    measures the optimizer"). Clipping the two gradients independently at
+    the same norm is what keeps the task trained while the penalty
+    descends.
+    """
+    # Data gradient first, clipped and stashed.
+    data_loss.backward(retain_graph=True)
+    torch.nn.utils.clip_grad_norm_(params, clip_norm)
+    g_data = [None if p.grad is None else p.grad.detach().clone() for p in params]
+
+    # Penalty gradient next, clipped, then summed with the stashed data grad.
+    for p in params:
+        p.grad = None
+    penalty_loss.backward()
+    torch.nn.utils.clip_grad_norm_(params, clip_norm)
+    for p, gd in zip(params, g_data):
+        if gd is None:
+            continue
+        if p.grad is None:
+            p.grad = gd
+        else:
+            p.grad = p.grad + gd
+
+
 def train_one_epoch(
     model, probes, classifier, opt, loader, weights,
-    batches_per_epoch, device, log_every=10,
+    batches_per_epoch, device, params, log_every=10,
+    separate_clip=True, clip_norm=1.0,
 ):
     model.train(); probes.train(); classifier.train()
-    parts_running = {"task": 0.0, "align": 0.0, "xcov": 0.0, "total": 0.0}
+    parts_running = {"task": 0.0, "align": 0.0, "indep": 0.0, "total": 0.0}
     correct = 0
     n_seen = 0
 
@@ -129,13 +171,32 @@ def train_one_epoch(
         task_loss = F.cross_entropy(logits, y)
         s_pred, m_pred = probes(out["h"])
 
-        loss_total, parts = smfe_total_loss(
-            task_loss=task_loss,
-            s_pred=s_pred, m_pred=m_pred,
-            s_target=s_feat, m_target=m_feat,
-            weights=weights,
-        )
-        loss_total.backward()
+        if separate_clip:
+            # Split objective into a data side and an independence-penalty
+            # side, clip each gradient separately, then step.
+            al = alignment_loss(s_pred, m_pred, s_feat, m_feat, stop_grad_target=True)
+            indep = independence_penalty(s_pred, m_pred, weights)
+            data_loss = task_loss + weights.lambda_align * al
+            penalty_loss = weights.lambda_indep * indep
+            _backward_with_separate_clipping(data_loss, penalty_loss, params, clip_norm)
+            total_val = float((data_loss + penalty_loss).detach().item())
+            parts = {
+                "task": float(task_loss.detach().item()),
+                "align": float(al.detach().item()),
+                "indep": float(indep.detach().item()),
+                "penalty": weights.penalty,
+                "total": total_val,
+            }
+        else:
+            loss_total, parts = smfe_total_loss(
+                task_loss=task_loss,
+                s_pred=s_pred, m_pred=m_pred,
+                s_target=s_feat, m_target=m_feat,
+                weights=weights,
+            )
+            loss_total.backward()
+            if clip_norm is not None:
+                torch.nn.utils.clip_grad_norm_(params, clip_norm)
         opt.step()
 
         for k in parts_running:
@@ -149,7 +210,7 @@ def train_one_epoch(
             print(
                 f"  step {step+1:4d}/{batches_per_epoch} | "
                 f"task {parts['task']:.4f} | align {parts['align']:.4f} | "
-                f"xcov {parts['xcov']:.4f} | acc {correct/max(n_seen,1):.3f}"
+                f"{parts['penalty']} {parts['indep']:.4f} | acc {correct/max(n_seen,1):.3f}"
             )
 
     for k in parts_running:
@@ -225,8 +286,24 @@ def main():
 
     p.add_argument("--lr", type=float, default=5e-3)
     p.add_argument("--lambda-align", type=float, default=1.0)
-    p.add_argument("--lambda-xcov",  type=float, default=1e-2)
+    p.add_argument("--penalty", choices=["hsic", "xcov"], default="hsic",
+                   help="independence penalty: HSIC (kernelized, default) or "
+                        "the linear cross-covariance proxy")
+    p.add_argument("--lambda-indep", type=float, default=1e-2,
+                   help="weight on the independence penalty")
+    p.add_argument("--lambda-xcov",  type=float, default=None,
+                   help="DEPRECATED alias: selects --penalty xcov with this weight")
+    p.add_argument("--hsic-sigma", type=float, default=None,
+                   help="RBF bandwidth for HSIC; default (unset) uses the median heuristic")
+    p.add_argument("--hsic-subsample", type=int, default=4096,
+                   help="entities sampled per step for the HSIC estimate")
     p.add_argument("--lambda-inv",   type=float, default=0.0)
+    p.add_argument("--clip-norm", type=float, default=1.0,
+                   help="per-side gradient-norm clip (data and penalty)")
+    p.add_argument("--no-separate-clip", dest="separate_clip", action="store_false",
+                   help="use a single joint gradient clip instead of clipping the "
+                        "data and penalty gradients separately (not recommended for HSIC)")
+    p.set_defaults(separate_clip=True)
 
     p.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     p.add_argument("--seed", type=int, default=0)
@@ -263,8 +340,19 @@ def main():
     classifier = nn.Linear(args.n_hid_out, args.n_classes).to(device)
     weights = SMFELossWeights(
         lambda_align=args.lambda_align,
-        lambda_xcov=args.lambda_xcov,
+        lambda_indep=args.lambda_indep,
         lambda_inv=args.lambda_inv,
+        penalty=args.penalty,
+        hsic_sigma=args.hsic_sigma,
+        hsic_subsample=args.hsic_subsample,
+        lambda_xcov=args.lambda_xcov,   # deprecated; overrides to penalty="xcov" if set
+    )
+    print(
+        f"independence penalty: {weights.penalty} "
+        f"(lambda_indep={weights.lambda_indep}"
+        + (f", sigma={'median' if weights.hsic_sigma is None else weights.hsic_sigma}, "
+           f"subsample={weights.hsic_subsample}" if weights.penalty == 'hsic' else '')
+        + f") | separate_clip={args.separate_clip}, clip_norm={args.clip_norm}"
     )
 
     n_params = sum(p.numel() for p in model.parameters())
@@ -282,17 +370,19 @@ def main():
         n_classes=args.n_classes, seed=args.seed + 1234, device=device,
     )
 
-    opt = torch.optim.AdamW(
-        list(model.parameters()) + list(probes.parameters()) + list(classifier.parameters()),
-        lr=args.lr, weight_decay=1e-4,
+    params = (
+        list(model.parameters()) + list(probes.parameters()) + list(classifier.parameters())
     )
+    opt = torch.optim.AdamW(params, lr=args.lr, weight_decay=1e-4)
 
     for epoch in range(1, args.epochs + 1):
         t0 = time.time()
         train_metrics = train_one_epoch(
             model, probes, classifier, opt, train_loader, weights,
             batches_per_epoch=args.batches_per_epoch,
-            device=device, log_every=max(1, args.batches_per_epoch // 5),
+            device=device, params=params,
+            log_every=max(1, args.batches_per_epoch // 5),
+            separate_clip=args.separate_clip, clip_norm=args.clip_norm,
         )
         eval_metrics = evaluate(model, probes, classifier, eval_loader,
                                 n_batches=args.eval_batches, device=device)
@@ -302,7 +392,7 @@ def main():
             f"train_acc={train_metrics['acc']:.3f} "
             f"task={train_metrics['task']:.4f} "
             f"align={train_metrics['align']:.4f} "
-            f"xcov={train_metrics['xcov']:.4f} | "
+            f"{weights.penalty}={train_metrics['indep']:.4f} | "
             f"eval_acc={eval_metrics['acc']:.3f} "
             f"attn(state)={eval_metrics['mean_state_attn']:.3f} "
             f"attn(mech)={eval_metrics['mean_mech_attn']:.3f} | "
